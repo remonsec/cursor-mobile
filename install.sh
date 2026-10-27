@@ -226,6 +226,10 @@ elif [[ "$MODE" == "2" ]]; then
   # Create glibc-aware 'cursor' and 'agent' launchers at $PREFIX/bin
   # The bundled 'node' binary inside cursor-agent is also a glibc ELF.
 
+  # Remove installer-placed symlinks from ~/.local/bin — they use /usr/bin/env
+  # which doesn't exist in Termux. Our $PREFIX/bin launchers take priority.
+  rm -f "$HOME/.local/bin/cursor" "$HOME/.local/bin/agent" "$HOME/.local/bin/cursor-agent" 2>/dev/null || true
+
   for CMD in cursor agent; do
     cat > "$PREFIX/bin/$CMD" <<WRAP
 #!/data/data/com.termux/files/usr/bin/bash
