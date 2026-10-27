@@ -8,7 +8,6 @@
   <img alt="Platform" src="https://img.shields.io/badge/platform-Android%20ARM64-green?logo=android">
   <img alt="Shell" src="https://img.shields.io/badge/shell-Bash-blue?logo=gnubash">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-blue">
-  <img alt="Maintained" src="https://img.shields.io/badge/maintained-yes-brightgreen">
   <img alt="Author" src="https://img.shields.io/badge/author-remonsec-orange">
 </p>
 
@@ -25,9 +24,7 @@
 ---
 
 > [!NOTE]
-> Cursor IDE is an Electron/VSCode-based application built for desktop Linux (glibc + X11/Wayland).
-> This installer bridges that gap via `proot-distro` (Ubuntu) + Termux:X11 for the **full GUI**,
-> or the official Cursor CLI for a **headless/agent workflow** — no root required.
+> Cursor's binaries are compiled for glibc + Linux. This installer handles Android compatibility automatically — installing the Termux glibc layer and creating native launchers. **No root required.**
 
 ---
 
@@ -37,7 +34,7 @@
 |---|---|
 | **Device** | Android 7+ (ARM64 / aarch64) |
 | **App** | [Termux](https://f-droid.org/packages/com.termux/) from **F-Droid** (not Play Store) |
-| **RAM** | ≥ 3 GB recommended (4 GB+ with zRAM is ideal) |
+| **RAM** | ≥ 3 GB recommended (4 GB+ with zRAM ideal) |
 | **Storage** | ≥ 4 GB free internal storage |
 | **Network** | Required for first-time download |
 | **GUI only** | [Termux:X11](https://github.com/termux/termux-x11/releases) APK installed |
@@ -55,7 +52,7 @@ wget https://raw.githubusercontent.com/remonsec/cursor-mobile/main/install.sh
 bash install.sh
 ```
 
-Or one-liner:
+One-liner:
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/remonsec/cursor-mobile/main/install.sh)
@@ -65,31 +62,30 @@ bash <(curl -fsSL https://raw.githubusercontent.com/remonsec/cursor-mobile/main/
 
 ## 🎛 Installation Modes
 
-### Mode 1 — Full GUI (Recommended)
+### Mode 1 — Full GUI
 
-Installs Cursor IDE with full graphical interface using `proot-distro` (Ubuntu 24.04 arm64) + Termux:X11.
+Installs Cursor IDE with full graphical interface via `proot-distro` (Ubuntu 24.04 arm64) + Termux:X11.
 
 ```
 [Termux:X11 APK] ←─ display ──→ [proot Ubuntu] ←─ runs ──→ [Cursor AppImage]
                                        ↑
-                              [ Termux Launcher wrapper ]
-                                   `cursor` command
+                              [ $PREFIX/bin/cursor wrapper ]
 ```
 
 **After install:**
-1. Open the **Termux:X11** app on your Android home screen
+1. Open the **Termux:X11** app on your device
 2. In Termux, run: `cursor`
 3. Sign in with your Cursor account
 
-### Mode 2 — CLI / Agent (Lightweight)
+### Mode 2 — CLI / Agent
 
-Installs the **official Cursor CLI** (`cursor`) directly in Termux — no GUI, no proot.
-Ideal for headless workflows, SSH, or AI agent scripting.
+Installs the **official Cursor Agent CLI** directly in Termux — no GUI, no proot.
+Ideal for headless workflows, SSH sessions, or AI agent pipelines.
 
 ```bash
 cursor login          # authenticate
-cursor agent          # start the AI agent
-cursor -p "review this code"   # one-shot mode
+cursor                # start the agent
+agent                 # alias
 ```
 
 ---
@@ -98,28 +94,24 @@ cursor -p "review this code"   # one-shot mode
 
 ```
 install.sh
- ├─ [Mode 1]
- │   ├─ pkg install proot-distro wget curl pulseaudio
- │   ├─ proot-distro install ubuntu          ← Ubuntu 24.04 LTS arm64 rootfs
- │   ├─ apt install <Cursor GUI deps>        ← GTK3, NSS, libasound2, etc.
- │   ├─ wget cursor.AppImage (arm64)         ← Official Cursor Linux arm64 build
- │   ├─ cursor.AppImage --appimage-extract   ← Extract without FUSE
- │   ├─ pulseaudio --start                  ← Audio daemon for Termux
- │   └─ /usr/bin/cursor (wrapper script)    ← `cursor` launch command
+ ├─ [Mode 1 — GUI]
+ │   ├─ pkg install proot-distro wget curl pulseaudio glibc
+ │   ├─ proot-distro install ubuntu     ← Ubuntu 24.04 LTS arm64 rootfs
+ │   ├─ apt install <GUI deps>          ← GTK3, NSS, X11 libs, etc.
+ │   ├─ wget cursor.AppImage (arm64)    ← Official Cursor Linux arm64 build
+ │   ├─ AppImage --appimage-extract     ← Extract without FUSE (unavailable on Android)
+ │   └─ $PREFIX/bin/cursor              ← Launch wrapper via proot + PulseAudio
  │
- └─ [Mode 2]
-     ├─ curl cursor.com/install | bash       ← Official Cursor CLI installer
-     └─ `cursor` CLI available in PATH
+ └─ [Mode 2 — CLI]
+     ├─ pkg install glibc               ← glibc layer for linux-arm64 ELF binaries
+     ├─ curl cursor.com/install | bash  ← Official installer, detects linux/arm64
+     ├─ shebang patched in wrapper      ← /usr/bin/env → $PREFIX/bin/env
+     └─ $PREFIX/bin/cursor|agent        ← Launchers invoke bundled node via glibc linker
 ```
 
-### Why proot instead of native Termux?
+### Why glibc is needed
 
-Cursor's binary stack requires:
-- **glibc** — Termux uses Android's bionic libc (incompatible)
-- **FUSE** — Not available without root on Android
-- **X11/Wayland** — Android has neither natively
-
-`proot-distro` provides a full glibc-based Ubuntu userspace without root. Termux:X11 provides the X11 display server as a native Android app. The AppImage is extracted (bypassing FUSE) and run directly from the rootfs.
+Cursor's binaries — including the bundled Node.js in CLI mode — are compiled for glibc (`ld-linux-aarch64.so.1`). Termux uses Android's bionic libc, which cannot execute these binaries directly. The [Termux glibc package](https://github.com/termux/termux-packages/tree/master/packages/glibc) provides the required dynamic linker. The launchers installed by this script handle the invocation transparently.
 
 ---
 
@@ -131,13 +123,12 @@ Cursor's binary stack requires:
 4. **Open** Termux:X11 first, then run `cursor` in Termux
 
 ```bash
-# Inside Termux — launch Cursor with display
 export DISPLAY=:0
 cursor
 ```
 
 > [!TIP]
-> For the best experience, use a Bluetooth keyboard + mouse, or pair a monitor via USB-C/HDMI adapter.
+> For the best experience, use a Bluetooth keyboard + mouse or connect a monitor via USB-C/HDMI.
 
 ---
 
@@ -145,55 +136,59 @@ cursor
 
 | Path | Purpose |
 |---|---|
-| `~/.cursor-mobile/cursor.AppImage` | Downloaded Cursor AppImage |
-| `~/.cursor-mobile/squashfs-root/` | Extracted Cursor application files |
-| `$PREFIX/bin/cursor` | Launch wrapper (Termux PATH) |
+| `~/.cursor-mobile/cursor.AppImage` | Downloaded Cursor AppImage (GUI mode) |
+| `~/.cursor-mobile/squashfs-root/` | Extracted Cursor files (GUI mode) |
+| `~/.local/share/cursor-agent/` | Cursor Agent installation (CLI mode) |
+| `$PREFIX/bin/cursor` | Termux launcher |
+| `$PREFIX/bin/agent` | Cursor Agent alias |
 | `$PREFIX/bin/start-cursor-display` | Termux:X11 display helper |
 
 ---
 
 ## 🐛 Troubleshooting
 
-### "cursor: command not found"
+### `cursor: command not found`
 ```bash
-echo $PATH        # ensure $PREFIX/bin is in PATH
-source ~/.bashrc
+echo $PATH   # $PREFIX/bin must be present
 ```
 
-### Black screen / no display
-- Make sure Termux:X11 is **open and running** before launching `cursor`
-- Try: `export DISPLAY=:0 && cursor`
+### Black screen / no display (GUI mode)
+- Ensure Termux:X11 is open **before** running `cursor`
+- Set display manually: `export DISPLAY=:0 && cursor`
 
 ### AppImage download fails
-Manually download from Cursor's website and place it at `~/.cursor-mobile/cursor.AppImage`:
+Download manually and place at `~/.cursor-mobile/cursor.AppImage`:
 ```bash
-# Check for ARM64 build on cursor.com/downloads
-wget -O ~/.cursor-mobile/cursor.AppImage <your-download-url>
+wget -O ~/.cursor-mobile/cursor.AppImage <url-from-cursor.com/downloads>
 chmod +x ~/.cursor-mobile/cursor.AppImage
 ```
 
 ### Out of memory
-Cursor is RAM-heavy. Enable zRAM or close other apps:
 ```bash
-# Check available memory
-free -h
+free -h   # check available RAM; close background apps
 ```
 
-### proot-distro: Ubuntu already exists
+### Reinstall Ubuntu container
 ```bash
-proot-distro remove ubuntu   # wipe and reinstall
+proot-distro remove ubuntu
 proot-distro install ubuntu
 bash install.sh
 ```
 
 ---
 
-## 🔄 Updating Cursor
+## 🔄 Updating
 
+**CLI mode** — re-run the installer to get the latest agent version:
+```bash
+bash install.sh
+```
+
+**GUI mode** — delete the AppImage and re-run:
 ```bash
 rm ~/.cursor-mobile/cursor.AppImage
 rm -rf ~/.cursor-mobile/squashfs-root
-bash install.sh   # re-runs the download + extract
+bash install.sh
 ```
 
 ---
