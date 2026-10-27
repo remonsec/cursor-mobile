@@ -1,0 +1,7 @@
+.cursor-mobile/
+squashfs-root/
+*.AppImage
+*.deb
+*.tar.*
+node_modules/
+.DS_Store
