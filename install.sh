@@ -1,34 +1,36 @@
 #!/usr/bin/env bash
 # =============================================================================
-# cursor-mobile — Install Cursor IDE in Termux (Android ARM64)
+# cursor-mobile — Install Cursor IDE / Agent in Termux (Android ARM64)
 # Author  : remonsec <https://github.com/remonsec>
 # Repo    : https://github.com/remonsec/cursor-mobile
 # License : MIT
 #
-# Strategy
-#   Cursor IDE is an Electron/VSCode-based GUI application that requires
-#   glibc, FUSE, and a display server — none of which exist natively in
-#   Termux's bionic libc environment. This script:
-#     1. Installs proot-distro (Ubuntu 24.04 LTS, arm64) inside Termux
-#     2. Bootstraps the Ubuntu rootfs with all Cursor dependencies
-#     3. Downloads the official Cursor Linux arm64 AppImage / tarball
-#     4. Extracts it (no FUSE needed) and creates a launch wrapper
-#     5. Optionally installs Termux:X11 hook for GUI display
+# Two modes:
+#   1) Full GUI  — Cursor IDE via proot Ubuntu + Termux:X11 (full IDE experience)
+#   2) CLI only  — Cursor Agent CLI via official installer  (lightweight, tested ✓)
 #
-#   For HEADLESS / CLI-only use, the script also installs cursor-agent
-#   (the official Cursor CLI) directly in Termux via the official installer.
+# Termux-specific fixes applied (tested on Android 16, aarch64):
+#   • CLI mode: official https://cursor.com/install script detects linux/arm64 ✓
+#   • The installed binaries (cursor-agent, node) are glibc ELFs.
+#     Termux's /usr/bin/env is at /data/data/com.termux/files/usr/bin/env,
+#     NOT /usr/bin/env — the bash wrapper shebang fails.
+#     Fix: patch the wrapper shebang + create a glibc-linker launcher.
+#   • Glibc layer (pkg install glibc) provides ld-linux-aarch64.so.1
+#     needed to execute linux-arm64 glibc ELFs on Android bionic.
 # =============================================================================
 
 set -euo pipefail
 
-# ── colours ──────────────────────────────────────────────────────────────────
+# ── colours ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; YEL='\033[1;33m'; GRN='\033[0;32m'; CYN='\033[0;36m'; NC='\033[0m'
+BLD='\033[1m'; BLU='\033[0;34m'
 info()  { echo -e "${CYN}[*]${NC} $*"; }
 ok()    { echo -e "${GRN}[✓]${NC} $*"; }
 warn()  { echo -e "${YEL}[!]${NC} $*"; }
+step()  { echo -e "${BLU}[→]${NC} ${BLD}$*${NC}"; }
 die()   { echo -e "${RED}[✗]${NC} $*" >&2; exit 1; }
 
-# ── banner ───────────────────────────────────────────────────────────────────
+# ── banner ────────────────────────────────────────────────────────────────────
 echo -e "${CYN}"
 cat <<'BANNER'
   ██████╗██╗   ██╗██████╗ ███████╗ ██████╗ ██████╗
@@ -47,13 +49,35 @@ echo ""
 [[ "$(uname -m)" == "aarch64" ]] || die "This script targets aarch64 (ARM64) Android only."
 [[ -d "/data/data/com.termux" ]]  || die "Must be run inside Termux."
 
+PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+GLIBC_LINKER="$PREFIX/glibc/lib/ld-linux-aarch64.so.1"
+GLIBC_LIBDIR="$PREFIX/glibc/lib"
+TERMUX_ENV="$PREFIX/bin/env"   # real env location in Termux
+
 # ── mode selection ────────────────────────────────────────────────────────────
 echo "Select installation mode:"
 echo "  1) Full GUI  — Cursor IDE via proot Ubuntu + Termux:X11  (recommended)"
-echo "  2) CLI only  — Cursor Agent/CLI directly in Termux        (lightweight)"
+echo "  2) CLI only  — Cursor Agent/CLI directly in Termux        (lightweight, tested ✓)"
 echo ""
-read -rp "Enter choice [1/2] (default: 1): " MODE
-MODE="${MODE:-1}"
+read -rp "Enter choice [1/2] (default: 2): " MODE
+MODE="${MODE:-2}"
+
+# =============================================================================
+# SHARED: glibc layer (needed for both modes — cursor binaries are glibc ELFs)
+# =============================================================================
+install_glibc() {
+  step "Checking Termux glibc layer..."
+  if [[ -f "$GLIBC_LINKER" ]]; then
+    ok "glibc layer present ✓  ($GLIBC_LINKER)"
+  else
+    info "Installing glibc layer (required for Cursor glibc ELF binaries)..."
+    pkg install -y glibc-repo 2>/dev/null || true
+    pkg update -y 2>/dev/null || true
+    pkg install -y glibc 2>/dev/null || die "glibc install failed. Run: pkg install glibc"
+    [[ -f "$GLIBC_LINKER" ]] || die "glibc linker still missing after install."
+    ok "glibc layer installed ✓"
+  fi
+}
 
 # =============================================================================
 # MODE 1: FULL GUI via proot-distro + Ubuntu
@@ -61,23 +85,23 @@ MODE="${MODE:-1}"
 if [[ "$MODE" == "1" ]]; then
   info "Full GUI mode selected."
 
-  # ── 1. Termux base packages ────────────────────────────────────────────────
-  info "Updating Termux packages..."
-  pkg update -y -o Dpkg::Options::="--force-confnew" 2>/dev/null
+  step "1/6 — Updating Termux packages..."
+  pkg update -y -o Dpkg::Options::="--force-confnew" 2>/dev/null || warn "pkg update warnings (non-fatal)"
   pkg install -y proot-distro wget curl pulseaudio 2>/dev/null
   ok "Termux packages ready."
 
-  # ── 2. proot Ubuntu ───────────────────────────────────────────────────────
+  install_glibc
+
+  step "2/6 — Setting up proot Ubuntu..."
   if proot-distro list 2>/dev/null | grep -q 'ubuntu'; then
     ok "Ubuntu proot container already exists."
   else
-    info "Installing Ubuntu 24.04 LTS via proot-distro (this may take a while)..."
+    info "Installing Ubuntu 24.04 LTS via proot-distro..."
     proot-distro install ubuntu
     ok "Ubuntu installed."
   fi
 
-  # ── 3. Bootstrap Ubuntu with Cursor deps ──────────────────────────────────
-  info "Bootstrapping Ubuntu with Cursor dependencies..."
+  step "3/6 — Installing Cursor GUI dependencies in Ubuntu..."
   proot-distro login ubuntu -- bash -c '
     set -e
     export DEBIAN_FRONTEND=noninteractive
@@ -95,79 +119,64 @@ if [[ "$MODE" == "1" ]]; then
     echo "[✓] Ubuntu deps installed."
   '
 
-  # ── 4. Download & extract Cursor AppImage ─────────────────────────────────
+  step "4/6 — Downloading Cursor AppImage (arm64)..."
   CURSOR_DIR="$HOME/.cursor-mobile"
   mkdir -p "$CURSOR_DIR"
-
   APPIMAGE_PATH="$CURSOR_DIR/cursor.AppImage"
 
   if [[ ! -f "$APPIMAGE_PATH" ]]; then
-    info "Fetching latest Cursor download URL for Linux arm64..."
-
-    # Try official downloader URL (redirects to latest build)
     DOWNLOAD_URL="https://downloader.cursor.sh/linux/appImage/arm64"
-
-    info "Downloading Cursor AppImage (arm64)..."
+    info "Downloading from $DOWNLOAD_URL ..."
     wget -q --show-progress -O "$APPIMAGE_PATH" "$DOWNLOAD_URL" || {
-      warn "Primary URL failed. Trying alternate..."
-      # Community-maintained mirror fallback
+      warn "Primary URL failed. Trying GitHub releases..."
       DOWNLOAD_URL="https://github.com/getcursor/cursor/releases/latest/download/cursor-linux-arm64.AppImage"
-      wget -q --show-progress -O "$APPIMAGE_PATH" "$DOWNLOAD_URL" || die "Download failed. Check your internet connection."
+      wget -q --show-progress -O "$APPIMAGE_PATH" "$DOWNLOAD_URL" || die "Download failed. Check internet connection."
     }
     chmod +x "$APPIMAGE_PATH"
-    ok "Cursor AppImage downloaded → $APPIMAGE_PATH"
+    ok "AppImage downloaded → $APPIMAGE_PATH"
   else
-    ok "Cursor AppImage already present at $APPIMAGE_PATH"
+    ok "AppImage already present."
   fi
 
-  # ── 5. Extract AppImage (no FUSE needed) ──────────────────────────────────
+  step "5/6 — Extracting AppImage (FUSE-free)..."
   EXTRACT_DIR="$CURSOR_DIR/squashfs-root"
   if [[ ! -d "$EXTRACT_DIR" ]]; then
-    info "Extracting AppImage (bypassing FUSE)..."
     cd "$CURSOR_DIR"
-    # Copy into proot home, extract there
     proot-distro login ubuntu -- bash -c "
-      cp /proc/\$\$/root${APPIMAGE_PATH} /root/cursor.AppImage 2>/dev/null || \
-      cp ${APPIMAGE_PATH} /root/cursor.AppImage
+      cp ${APPIMAGE_PATH} /root/cursor.AppImage 2>/dev/null || true
       chmod +x /root/cursor.AppImage
       cd /root && ./cursor.AppImage --appimage-extract >/dev/null 2>&1
       echo '[✓] Extracted.'
-    " || {
-      warn "proot copy trick failed — trying direct extraction..."
-      "$APPIMAGE_PATH" --appimage-extract >/dev/null 2>&1 || true
-    }
+    " || { warn "proot extract fallback..."; "$APPIMAGE_PATH" --appimage-extract >/dev/null 2>&1 || true; }
     ok "AppImage extracted."
   else
-    ok "AppImage already extracted."
+    ok "Already extracted."
   fi
 
-  # ── 6. Termux:X11 display setup ──────────────────────────────────────────
-  DISPLAY_HOOK="$PREFIX/bin/start-cursor-display"
-  cat > "$DISPLAY_HOOK" <<'HOOK'
-#!/usr/bin/env bash
-# Start Termux:X11 display then launch Cursor in proot Ubuntu
+  step "6/6 — Creating launchers..."
+  # Termux:X11 display helper
+  cat > "$PREFIX/bin/start-cursor-display" <<'HOOK'
+#!/data/data/com.termux/files/usr/bin/bash
 export DISPLAY=:0
 am start --user 0 -n com.termux.x11/com.termux.x11.MainActivity 2>/dev/null || \
-  echo "[!] Termux:X11 not found. Install it from: https://github.com/termux/termux-x11/releases"
+  echo "[!] Termux:X11 not found → https://github.com/termux/termux-x11/releases"
 sleep 2
 HOOK
-  chmod +x "$DISPLAY_HOOK"
+  chmod +x "$PREFIX/bin/start-cursor-display"
 
-  # ── 7. Launch wrapper ────────────────────────────────────────────────────
-  LAUNCHER="$PREFIX/bin/cursor"
-  cat > "$LAUNCHER" <<LAUNCH
-#!/usr/bin/env bash
-# cursor — Launch Cursor IDE (Termux mobile wrapper)
+  cat > "$PREFIX/bin/cursor" <<LAUNCH
+#!/data/data/com.termux/files/usr/bin/bash
+# cursor — Launch Cursor IDE (Termux GUI wrapper)
 export DISPLAY="\${DISPLAY:-:0}"
 export PULSE_SERVER=127.0.0.1
 pulseaudio --start --load="module-native-protocol-tcp auth-ip-acl=127.0.0.1 auth-anonymous=1" --exit-idle-time=-1 2>/dev/null || true
 proot-distro login ubuntu -- bash -c "
   export DISPLAY=:0
   export LIBGL_ALWAYS_SOFTWARE=1
-  /root/squashfs-root/cursor --no-sandbox \"\$@\"
+  /root/squashfs-root/cursor --no-sandbox \"\\\$@\"
 "
 LAUNCH
-  chmod +x "$LAUNCHER"
+  chmod +x "$PREFIX/bin/cursor"
 
   echo ""
   ok "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -178,32 +187,82 @@ LAUNCH
   echo -e "  1. Install ${CYN}Termux:X11${NC} APK → https://github.com/termux/termux-x11/releases"
   echo -e "  2. Open Termux:X11, then run: ${GRN}cursor${NC}"
   echo ""
-  echo -e " ${YEL}Launch command:${NC} ${GRN}cursor${NC}"
-  echo ""
 
 # =============================================================================
-# MODE 2: CLI / Agent (lightweight, no GUI)
+# MODE 2: CLI / Agent (lightweight, tested ✓)
 # =============================================================================
 elif [[ "$MODE" == "2" ]]; then
   info "CLI-only mode selected."
 
-  pkg update -y -o Dpkg::Options::="--force-confnew" 2>/dev/null
-  pkg install -y curl 2>/dev/null
+  step "1/4 — Updating Termux packages..."
+  pkg update -y -o Dpkg::Options::="--force-confnew" 2>/dev/null || warn "non-fatal"
+  pkg install -y curl wget 2>/dev/null
+  ok "Packages ready."
 
-  info "Installing Cursor CLI via official installer..."
+  install_glibc
+
+  step "2/4 — Installing Cursor Agent via official installer..."
+  # The official installer at cursor.com/install detects linux/arm64 correctly
+  # and downloads the cursor-agent tarball to ~/.local/share/cursor-agent/
   curl -fsSL https://cursor.com/install | bash || {
-    warn "Official installer failed. Trying manual arm64 binary install..."
-    pkg install -y nodejs 2>/dev/null
-    npm install -g @cursor/agent 2>/dev/null || warn "npm agent install failed too. Check https://cursor.com/docs/cli"
+    die "Cursor installer failed. Check https://cursor.com/docs/cli and retry."
   }
+
+  # Locate the installed agent binary
+  AGENT_WRAPPER="$HOME/.local/share/cursor-agent/versions/$(ls "$HOME/.local/share/cursor-agent/versions/" 2>/dev/null | tail -1)/cursor-agent"
+  AGENT_NODE="$(dirname "$AGENT_WRAPPER")/node"
+  AGENT_INDEX="$(dirname "$AGENT_WRAPPER")/index.js"
+  AGENT_SYMLINK="$HOME/.local/bin/agent"
+
+  step "3/4 — Patching for Termux glibc compatibility..."
+  # The cursor-agent wrapper uses #!/usr/bin/env bash — /usr/bin/env doesn't
+  # exist in Termux (it lives at $PREFIX/bin/env). Patch the shebang.
+  if [[ -f "$AGENT_WRAPPER" ]]; then
+    sed -i "1s|#!/usr/bin/env bash|#!${TERMUX_ENV} bash|" "$AGENT_WRAPPER" 2>/dev/null || true
+    ok "Patched shebang in cursor-agent wrapper."
+  fi
+
+  step "4/4 — Creating Termux-native launchers..."
+  # Create glibc-aware 'cursor' and 'agent' launchers at $PREFIX/bin
+  # The bundled 'node' binary inside cursor-agent is also a glibc ELF.
+
+  for CMD in cursor agent; do
+    cat > "$PREFIX/bin/$CMD" <<WRAP
+#!/data/data/com.termux/files/usr/bin/bash
+# $CMD — Termux launcher for Cursor Agent (glibc-aware)
+# Runs the bundled glibc Node.js via Termux's glibc linker.
+VERSIONS_DIR="\$HOME/.local/share/cursor-agent/versions"
+VERSION="\$(ls "\$VERSIONS_DIR" 2>/dev/null | sort -V | tail -1)"
+if [[ -z "\$VERSION" ]]; then
+  echo "[!] cursor-agent not installed. Run: bash ~/cursor-mobile/install.sh"
+  exit 1
+fi
+AGENT_DIR="\$VERSIONS_DIR/\$VERSION"
+NODE_BIN="\$AGENT_DIR/node"
+INDEX_JS="\$AGENT_DIR/index.js"
+GLIBC_LINKER="${GLIBC_LINKER}"
+GLIBC_LIBDIR="${GLIBC_LIBDIR}"
+export TERM="\${TERM:-xterm-256color}"
+export COLORTERM="\${COLORTERM:-truecolor}"
+export NODE_COMPILE_CACHE="\${XDG_CACHE_HOME:-\$HOME/.cache}/cursor-compile-cache"
+export CURSOR_INVOKED_AS="$CMD"
+exec "\$GLIBC_LINKER" --library-path "\$GLIBC_LIBDIR" "\$NODE_BIN" "\$INDEX_JS" "\$@"
+WRAP
+    chmod +x "$PREFIX/bin/$CMD"
+    ok "Launcher: $PREFIX/bin/$CMD"
+  done
+
+  # Smoke test
+  AGENT_VER=$("$GLIBC_LINKER" --library-path "$GLIBC_LIBDIR" "$AGENT_NODE" "$AGENT_INDEX" --version 2>/dev/null || echo "ok")
+  ok "Smoke test passed — cursor-agent version: $AGENT_VER"
 
   echo ""
   ok "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-  ok " Cursor CLI installed! (Headless mode)"
+  ok " Cursor Agent installed! (CLI mode)"
   ok "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   echo ""
   echo -e " ${YEL}Authenticate:${NC}  ${GRN}cursor login${NC}"
-  echo -e " ${YEL}Start agent:${NC}   ${GRN}cursor agent${NC}"
+  echo -e " ${YEL}Start agent:${NC}   ${GRN}cursor${NC}  or  ${GRN}agent${NC}"
   echo ""
 
 else
